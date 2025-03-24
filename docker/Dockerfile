@@ -53,4 +53,7 @@ COPY --from=build /usr/share/postgresql/16/extension/age--1.5.0.sql /usr/share/p
 COPY --from=build /usr/share/postgresql/16/extension/age.control /usr/share/postgresql/16/extension/
 COPY docker/docker-entrypoint-initdb.d/00-create-extension-age.sql /docker-entrypoint-initdb.d/00-create-extension-age.sql
 
+# Change to the uid of postgres (26)
+USER 26
+
 CMD ["postgres", "-c", "shared_preload_libraries=age"]
