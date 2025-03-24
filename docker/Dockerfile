@@ -44,7 +44,8 @@ USER root
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --no-install-suggests \
-    locales barman-cli-cloud \
+    locales barman-cli-cloud python3-pip \
+    && pip3 install azure-storage-blob azure-identity --break-system-packages \
     && rm -rf /var/lib/apt/lists/*
 
 RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen \
