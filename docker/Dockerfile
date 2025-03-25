@@ -16,53 +16,43 @@
 #
 
 # Build stage: Install necessary development tools for compilation and installation
-FROM debian:bullseye-slim AS build
+# First step is to build the the extension
+FROM debian:bullseye-slim AS builder
 
+# use the advice from here https://cloudnative-pg.io/blog/creating-container-images/
+# but also add in the deps for, and use, the AGE repo (https://age.apache.org/getstarted/quickstart/)
+# + PG15 did not seem to work due to a string types issue ?? but i just bumped to 16 and it was fine
 RUN set -xe ;\
     apt update && apt install wget lsb-release gnupg2 -y ;\
     sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' ;\
     wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - ;\
     apt-get update ;\
-    apt-get install -y postgresql-server-dev-16 bison build-essential git flex; \
+    apt-get install -y postgresql-server-dev-16 build-essential git libreadline-dev zlib1g-dev flex bison; \
     cd /tmp; \
-    git clone https://github.com/cybertec-postgresql/pg_crash; \
-    cd /tmp/pg_crash; \
+    git clone https://github.com/apache/age.git; \
+    cd /tmp/age; \
     PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config make; \
     PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config make install
 
-COPY . /age
+# Second step, we build the final image
+FROM ghcr.io/cloudnative-pg/postgresql:16.4
 
-WORKDIR /age
-
-RUN make && make install
-
-
-# Final stage: Create a final image by copying the files created in the build stage
-FROM ghcr.io/cloudnative-pg/postgresql:16-standard-bookworm
-
+# To install any package we need to be root user
 USER root
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends --no-install-suggests \
-    locales barman-cli-cloud python3-pip \
-    && pip3 install azure-storage-blob azure-identity --break-system-packages \
-    && rm -rf /var/lib/apt/lists/*
+# But this time we copy the .so file and .control and addme script from the build process
+COPY --from=builder /usr/lib/postgresql/16/lib/age.so /usr/lib/postgresql/16/lib/
+COPY --from=builder /usr/share/postgresql/16/extension/age.control /usr/share/postgresql/16/extension/
+COPY --from=builder /usr/share/postgresql/16/extension/age--1.5.0.sql /usr/share/postgresql/16/extension/
 
-RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen \
-    && locale-gen \
-    && update-locale LANG=en_US.UTF-8
+RUN set -xe; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+    "postgresql-16-pgvector" ; \
+    rm -fr /tmp/* ; \
+    rm -rf /var/lib/apt/lists/*;
 
-ENV LANG=en_US.UTF-8
-ENV LC_COLLATE=en_US.UTF-8
-ENV LC_CTYPE=en_US.UTF-8
-
-COPY --from=build /usr/lib/postgresql/16/lib/age.so /usr/lib/postgresql/16/lib/
-COPY --from=build /usr/share/postgresql/16/extension/age--1.5.0.sql /usr/share/postgresql/16/extension/
-COPY --from=build /usr/share/postgresql/16/extension/age.control /usr/share/postgresql/16/extension/
-COPY --from=build /tmp/pg_crash/pg_crash.so /usr/lib/postgresql/16/lib/
-COPY docker/docker-entrypoint-initdb.d/00-create-extension-age.sql /docker-entrypoint-initdb.d/00-create-extension-age.sql
-
-# Change to the uid of postgres (26)
+# Change the uid of postgres to 26
 RUN usermod -u 26 postgres
 USER 26
 
