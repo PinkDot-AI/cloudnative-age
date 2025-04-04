@@ -52,6 +52,10 @@ RUN set -xe; \
     rm -fr /tmp/* ; \
     rm -rf /var/lib/apt/lists/*;
 
+# Create the symlink to allow non-superusers to load the AGE library
+RUN mkdir -p /usr/lib/postgresql/16/lib/plugins && \
+    ln -s /usr/lib/postgresql/16/lib/age.so /usr/lib/postgresql/16/lib/plugins/age.so
+
 # Change the uid of postgres to 26
 RUN usermod -u 26 postgres
 USER 26
