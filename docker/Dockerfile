@@ -16,48 +16,75 @@
 #
 
 # Build stage: Install necessary development tools for compilation and installation
-# First step is to build the the extension
 FROM debian:bullseye-slim AS builder
 
-# use the advice from here https://cloudnative-pg.io/blog/creating-container-images/
-# but also add in the deps for, and use, the AGE repo (https://age.apache.org/getstarted/quickstart/)
-# + PG15 did not seem to work due to a string types issue ?? but i just bumped to 16 and it was fine
+ARG PG_VERSION=16
+
 RUN set -xe ;\
-    apt update && apt install wget lsb-release gnupg2 -y ;\
+    apt update && apt install wget lsb-release gnupg2 ca-certificates -y ;\
     sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' ;\
     wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - ;\
     apt-get update ;\
-    apt-get install -y postgresql-server-dev-16 build-essential git libreadline-dev zlib1g-dev flex bison; \
+    # Install only build dependencies
+    apt-get install -y --no-install-recommends \
+        "postgresql-server-dev-${PG_VERSION}" \
+        build-essential \
+        git \
+        libreadline-dev \
+        zlib1g-dev \
+        flex \
+        bison ;\
     cd /tmp; \
     git clone https://github.com/apache/age.git; \
     cd /tmp/age; \
-    PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config make; \
-    PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config make install
+    # Use the pg_config corresponding to the build version
+    PG_CONFIG="/usr/lib/postgresql/${PG_VERSION}/bin/pg_config" make; \
+    PG_CONFIG="/usr/lib/postgresql/${PG_VERSION}/bin/pg_config" make install; \
+    # Clean up build stage deps
+    apt-get purge -y --auto-remove \
+        "postgresql-server-dev-${PG_VERSION}" \
+        build-essential \
+        git \
+        libreadline-dev \
+        zlib1g-dev \
+        flex \
+        bison ;\
+    apt-get clean ;\
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Second step, we build the final image
+# Final stage: Use the official CloudNativePG image
 FROM ghcr.io/cloudnative-pg/postgresql:16.4
 
-# To install any package we need to be root user
+ARG PG_VERSION=16
+
+# Match the PG_VERSION used in the builder stage
+ENV PG_VERSION=${PG_VERSION}
+
+# Switch to root to copy files and install runtime dependencies
 USER root
 
-# But this time we copy the .so file and .control and addme script from the build process
-COPY --from=builder /usr/lib/postgresql/16/lib/age.so /usr/lib/postgresql/16/lib/
-COPY --from=builder /usr/share/postgresql/16/extension/age.control /usr/share/postgresql/16/extension/
-COPY --from=builder /usr/share/postgresql/16/extension/age--1.5.0.sql /usr/share/postgresql/16/extension/
+# Copy only the necessary AGE extension files from the builder stage
+COPY --from=builder "/usr/lib/postgresql/${PG_VERSION}/lib/age.so" "/usr/lib/postgresql/${PG_VERSION}/lib/"
+COPY --from=builder "/usr/share/postgresql/${PG_VERSION}/extension/age.control" "/usr/share/postgresql/${PG_VERSION}/extension/"
+COPY --from=builder "/usr/share/postgresql/${PG_VERSION}/extension/age--"*.sql "/usr/share/postgresql/${PG_VERSION}/extension/"
 
+# Install runtime dependencies (like pgvector, if needed)
 RUN set -xe; \
     apt-get update; \
+    # Ensure the runtime package for the specific PG version is installed if needed by AGE
+    # Often, the .so file might have implicit dependencies not caught during build
+    # apt-get install -y --no-install-recommends postgresql-${PG_VERSION} # Uncomment if needed
     apt-get install -y --no-install-recommends \
-    "postgresql-16-pgvector" ; \
-    rm -fr /tmp/* ; \
-    rm -rf /var/lib/apt/lists/*;
+    "postgresql-${PG_VERSION}-pgvector" ; \
+    # Clean up package manager cache
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*;
 
-# Create the symlink to allow non-superusers to load the AGE library
-RUN mkdir -p /usr/lib/postgresql/16/lib/plugins && \
-    ln -s /usr/lib/postgresql/16/lib/age.so /usr/lib/postgresql/16/lib/plugins/age.so
+# Create the plugins directory and the symlink for non-superuser loading
+# Ensure the path matches the PG_VERSION being used
+RUN mkdir -p "/usr/lib/postgresql/${PG_VERSION}/lib/plugins" && \
+    ln -s "/usr/lib/postgresql/${PG_VERSION}/lib/age.so" "/usr/lib/postgresql/${PG_VERSION}/lib/plugins/age.so"
 
-# Change the uid of postgres to 26
+# Switch back to the standard postgres user (UID 26 for CloudNativePG)
+# Ensure the UID matches what CloudNativePG expects (usually 26)
 RUN usermod -u 26 postgres
 USER 26
-
-CMD ["postgres", "-c", "shared_preload_libraries=age"]
